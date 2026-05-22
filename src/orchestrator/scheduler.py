@@ -1,9 +1,8 @@
 """Task Scheduler — Priority-based task queuing and dispatch."""
 
-import asyncio
 import heapq
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 
@@ -33,15 +32,18 @@ class PriorityQueue:
 class TaskScheduler:
     def __init__(self):
         self._queues: Dict[str, PriorityQueue] = {}
-        self._scheduled: Dict[str, float] = {}
+        self._scheduled: Dict[str, Tuple[Dict, float, str, int]] = {}
         self._in_flight: Dict[str, Dict] = {}
+        self._deferred: Dict[str, Dict] = {}
+        self._dependency_health: Dict[str, Tuple[bool, str]] = {}
         self._max_retries = 3
 
     def enqueue(self, task: Dict, queue: str = "default", priority: int = 0) -> str:
-        task_id = str(uuid4())
-        task["id"] = task_id
+        task_id = task.setdefault("id", str(uuid4()))
         task["enqueued_at"] = time.time()
-        task["retries"] = 0
+        task["queue"] = queue
+        task["priority"] = priority
+        task.setdefault("retries", 0)
 
         if queue not in self._queues:
             self._queues[queue] = PriorityQueue()
@@ -51,20 +53,36 @@ class TaskScheduler:
     def schedule(self, task: Dict, delay: float, queue: str = "default", priority: int = 0) -> str:
         task_id = str(uuid4())
         task["id"] = task_id
-        self._scheduled[task_id] = time.time() + delay
+        self._scheduled[task_id] = (task, time.time() + delay, queue, priority)
         return task_id
 
+    def set_dependency_health(self, dependency: str, healthy: bool, reason: str = "") -> None:
+        self._dependency_health[dependency] = (healthy, reason)
+
+    def get_deferred(self, task_id: str) -> Optional[Dict]:
+        return self._deferred.get(task_id)
+
+    def deferred_count(self) -> int:
+        return len(self._deferred)
+
     async def dequeue(self, queue: str = "default", timeout: float = 1.0) -> Optional[Dict]:
+        self._restore_deferred_tasks()
+
         now = time.time()
-        expired = [tid for tid, t in self._scheduled.items() if t <= now]
+        expired = [tid for tid, (_, ready_at, _, _) in self._scheduled.items() if ready_at <= now]
         for tid in expired:
-            task = self._scheduled.pop(tid)
+            task, _, scheduled_queue, priority = self._scheduled.pop(tid)
             if task:
-                self.enqueue(task, queue)
+                self.enqueue(task, scheduled_queue, priority)
 
         if queue in self._queues and len(self._queues[queue]) > 0:
             task = self._queues[queue].pop()
             if task:
+                blocked_dependencies = self._blocked_dependencies(task)
+                if blocked_dependencies:
+                    self._defer_task(task, blocked_dependencies)
+                    return None
+
                 self._in_flight[task["id"]] = task
                 return task
         return None
@@ -80,6 +98,35 @@ class TaskScheduler:
                 self.enqueue(task, queue, priority=task.get("priority", 0))
                 return True
         return False
+
+    def _blocked_dependencies(self, task: Dict) -> List[Dict[str, str]]:
+        blocked = []
+        for dependency in task.get("dependencies", []):
+            healthy, reason = self._dependency_health.get(dependency, (True, ""))
+            if not healthy:
+                blocked.append({"dependency": dependency, "reason": reason})
+        return blocked
+
+    def _defer_task(self, task: Dict, blocked_dependencies: List[Dict[str, str]]) -> None:
+        task["deferred_at"] = time.time()
+        task["defer_count"] = task.get("defer_count", 0) + 1
+        task["deferred_reason"] = blocked_dependencies
+        self._deferred[task["id"]] = task
+
+    def _restore_deferred_tasks(self) -> None:
+        ready = [
+            task_id
+            for task_id, task in self._deferred.items()
+            if not self._blocked_dependencies(task)
+        ]
+        for task_id in ready:
+            task = self._deferred.pop(task_id)
+            task.pop("deferred_reason", None)
+            self.enqueue(
+                task,
+                queue=task.get("queue", "default"),
+                priority=task.get("priority", 0),
+            )
 
 # 2019-04-25T08:37:12 update
 

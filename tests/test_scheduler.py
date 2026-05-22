@@ -36,6 +36,42 @@ class TestTaskScheduler:
         task = asyncio.run(self.scheduler.dequeue())
         assert self.scheduler.fail(task["id"])
 
+    def test_dequeue_defers_task_when_dependency_is_unhealthy(self):
+        self.scheduler.set_dependency_health("payments", False, "service outage")
+        task_id = self.scheduler.enqueue({"type": "billing", "dependencies": ["payments"]})
+
+        import asyncio
+        task = asyncio.run(self.scheduler.dequeue())
+
+        assert task is None
+        assert self.scheduler.deferred_count() == 1
+        deferred = self.scheduler.get_deferred(task_id)
+        assert deferred is not None
+        assert deferred["deferred_reason"] == [
+            {"dependency": "payments", "reason": "service outage"}
+        ]
+        assert not self.scheduler.complete(task_id)
+
+    def test_deferred_task_dispatches_after_dependency_recovers(self):
+        self.scheduler.set_dependency_health("payments", False, "service outage")
+        task_id = self.scheduler.enqueue(
+            {"type": "billing", "dependencies": ["payments"]},
+            priority=7,
+        )
+
+        import asyncio
+        assert asyncio.run(self.scheduler.dequeue()) is None
+
+        self.scheduler.set_dependency_health("payments", True)
+        task = asyncio.run(self.scheduler.dequeue())
+
+        assert task is not None
+        assert task["id"] == task_id
+        assert task["type"] == "billing"
+        assert "deferred_reason" not in task
+        assert self.scheduler.deferred_count() == 0
+        assert self.scheduler.complete(task_id)
+
 # 2019-01-09T19:07:03 update
 
 # 2019-02-18T12:30:02 update
