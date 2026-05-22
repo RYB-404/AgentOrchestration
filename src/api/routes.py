@@ -1,9 +1,10 @@
 """API route definitions."""
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter
 from typing import List, Dict, Optional
 
 from src.agent import AgentRegistry, AgentStatus
+from src.api.validation import not_found_error, parse_agent_id, parse_agent_status, require_non_empty
 
 router = APIRouter()
 registry = AgentRegistry()
@@ -11,42 +12,48 @@ registry = AgentRegistry()
 
 @router.get("/agents")
 async def list_agents(status: Optional[str] = None, group: Optional[str] = None):
-    status_filter = AgentStatus(status) if status else None
+    status_filter = parse_agent_status(status)
     return {"agents": registry.list(status=status_filter, group=group)}
 
 
 @router.post("/agents")
 async def register_agent(name: str, agent_type: str, config: Optional[Dict] = None):
+    name = require_non_empty(name, "name")
+    agent_type = require_non_empty(agent_type, "agent_type")
     agent_id = registry.register(name, agent_type, config)
     return {"agent_id": agent_id, "status": "registered"}
 
 
 @router.get("/agents/{agent_id}")
 async def get_agent(agent_id: str):
+    agent_id = parse_agent_id(agent_id)
     agent = registry.get(agent_id)
     if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
+        raise not_found_error()
     return agent
 
 
 @router.delete("/agents/{agent_id}")
 async def delete_agent(agent_id: str):
+    agent_id = parse_agent_id(agent_id)
     if not registry.delete(agent_id):
-        raise HTTPException(status_code=404, detail="Agent not found")
+        raise not_found_error()
     return {"status": "deleted"}
 
 
 @router.post("/agents/{agent_id}/start")
 async def start_agent(agent_id: str):
+    agent_id = parse_agent_id(agent_id)
     if not registry.update_status(agent_id, AgentStatus.RUNNING):
-        raise HTTPException(status_code=404, detail="Agent not found")
+        raise not_found_error()
     return {"status": "started"}
 
 
 @router.post("/agents/{agent_id}/stop")
 async def stop_agent(agent_id: str):
+    agent_id = parse_agent_id(agent_id)
     if not registry.update_status(agent_id, AgentStatus.PAUSED):
-        raise HTTPException(status_code=404, detail="Agent not found")
+        raise not_found_error()
     return {"status": "stopped"}
 
 

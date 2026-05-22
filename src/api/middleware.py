@@ -5,6 +5,7 @@ import logging
 from typing import Callable
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+from starlette.responses import JSONResponse
 from starlette.responses import Response
 
 logger = logging.getLogger(__name__)
@@ -15,7 +16,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if request.url.path.startswith("/api/v2") and request.url.path != "/api/v2/auth/token":
             token = request.headers.get("Authorization", "")
             if not token.startswith("Bearer "):
-                return Response(status_code=401, content="Unauthorized")
+                return JSONResponse(
+                    status_code=401,
+                    content={
+                        "error": {
+                            "code": "unauthorized",
+                            "message": "Bearer token is required",
+                        }
+                    },
+                )
         return await call_next(request)
 
 
