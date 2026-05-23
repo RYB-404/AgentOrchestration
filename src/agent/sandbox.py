@@ -2,16 +2,28 @@
 
 import os
 import tempfile
-import resource
 from typing import Dict, Optional
 from pathlib import Path
+
+try:
+    import resource
+except ImportError:  # pragma: no cover - exercised on platforms without resource
+    resource = None
 
 
 class ResourceLimits:
     def __init__(self, cpu_time: int = 60, memory_mb: int = 512, disk_mb: int = 100):
+        self._validate_positive_int("cpu_time", cpu_time)
+        self._validate_positive_int("memory_mb", memory_mb)
+        self._validate_positive_int("disk_mb", disk_mb)
         self.cpu_time = cpu_time
         self.memory_mb = memory_mb
         self.disk_mb = disk_mb
+
+    @staticmethod
+    def _validate_positive_int(name: str, value: int) -> None:
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"{name} must be a positive integer")
 
 
 class AgentSandbox:
@@ -37,6 +49,8 @@ class AgentSandbox:
         return self._sandboxes.get(agent_id)
 
     def apply_limits(self, agent_id: str, limits: ResourceLimits) -> None:
+        if resource is None:
+            return
         try:
             resource.setrlimit(resource.RLIMIT_CPU, (limits.cpu_time, limits.cpu_time))
             mem_bytes = limits.memory_mb * 1024 * 1024
