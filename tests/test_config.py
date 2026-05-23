@@ -32,6 +32,34 @@ class TestConfig:
         assert data["key1"] == "value1"
         assert data["key2"] == "value2"
 
+    def test_env_overrides_coerce_numeric_values(self, monkeypatch):
+        monkeypatch.setenv("AO_APP_PORT", "8080")
+        monkeypatch.setenv("AO_WORKER_TIMEOUT_SECONDS", " 30 ")
+        monkeypatch.setenv("AO_RATE_LIMIT", "0.25")
+        monkeypatch.setenv("AO_BACKOFF_MULTIPLIER", "1e3")
+        monkeypatch.setenv("AO_FEATURE_FLAG", "true")
+        monkeypatch.setenv("AO_SERVICE_NAME", "api-01")
+
+        config = Config()
+
+        assert config.get("app.port") == 8080
+        assert config.get("worker.timeout.seconds") == 30
+        assert config.get("rate.limit") == 0.25
+        assert config.get("backoff.multiplier") == 1000.0
+        assert config.get("feature.flag") == "true"
+        assert config.get("service.name") == "api-01"
+
+    def test_env_override_numeric_coercion_preserves_non_numeric_strings(self, monkeypatch):
+        monkeypatch.setenv("AO_RELEASE_VERSION", "001.002.003")
+        monkeypatch.setenv("AO_HOST", "127.0.0.1")
+        monkeypatch.setenv("AO_EMPTY", "")
+
+        config = Config()
+
+        assert config.get("release.version") == "001.002.003"
+        assert config.get("host") == "127.0.0.1"
+        assert config.get("empty") == ""
+
 # 2019-02-01T18:58:35 update
 
 # 2019-07-31T13:45:15 update
