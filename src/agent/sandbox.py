@@ -2,9 +2,13 @@
 
 import os
 import tempfile
-import resource
 from typing import Dict, Optional
 from pathlib import Path
+
+try:
+    import resource
+except ImportError:  # pragma: no cover - exercised on platforms without resource
+    resource = None
 
 
 class ResourceLimits:
@@ -34,9 +38,24 @@ class AgentSandbox:
         return False
 
     def get_path(self, agent_id: str) -> Optional[Path]:
-        return self._sandboxes.get(agent_id)
+        sandbox = self._sandboxes.get(agent_id)
+        if sandbox is None:
+            return None
+        if not sandbox.exists():
+            self._sandboxes.pop(agent_id, None)
+            return None
+
+        try:
+            sandbox.resolve().relative_to(self.base_path.resolve())
+        except ValueError:
+            self._sandboxes.pop(agent_id, None)
+            return None
+
+        return sandbox
 
     def apply_limits(self, agent_id: str, limits: ResourceLimits) -> None:
+        if resource is None:
+            return
         try:
             resource.setrlimit(resource.RLIMIT_CPU, (limits.cpu_time, limits.cpu_time))
             mem_bytes = limits.memory_mb * 1024 * 1024
