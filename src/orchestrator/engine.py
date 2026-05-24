@@ -17,6 +17,8 @@ class OrchestrationEngine:
         self.scheduler = TaskScheduler()
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self.agent_timeout = agent_timeout
+        self._runs: Dict[str, Dict[str, Any]] = {}
+        self.audit_log: List[Dict[str, Any]] = []
         self._running = False
         self._hooks: Dict[str, List[Callable]] = {
             "pre_execute": [],
@@ -28,6 +30,119 @@ class OrchestrationEngine:
     def register_hook(self, event: str, callback: Callable) -> None:
         if event in self._hooks:
             self._hooks[event].append(callback)
+
+    def register_run(
+        self,
+        run_id: str,
+        attempt: int = 1,
+        revision: int = 1,
+    ) -> None:
+        self._runs[run_id] = {
+            "attempt": attempt,
+            "revision": revision,
+            "status": "active",
+        }
+
+    def archive_run(self, run_id: str) -> bool:
+        run_state = self._runs.get(run_id)
+        if not run_state:
+            return False
+        run_state["status"] = "archived"
+        return True
+
+    def get_run_state(self, run_id: str) -> Optional[Dict[str, Any]]:
+        run_state = self._runs.get(run_id)
+        if run_state is None:
+            return None
+        return dict(run_state)
+
+    def apply_worker_event(self, run_id: str, event: Dict[str, Any]) -> bool:
+        run_state = self._runs.get(run_id)
+        event_type = str(event.get("type", "unknown"))
+        event_attempt = event.get("attempt")
+        event_revision = event.get("revision")
+
+        if run_state is None:
+            self._record_worker_event_decision(
+                run_id,
+                event_type,
+                "rejected",
+                "unknown_run",
+                event_attempt,
+                event_revision,
+            )
+            return False
+
+        if run_state["status"] == "archived":
+            self._record_worker_event_decision(
+                run_id,
+                event_type,
+                "rejected",
+                "archived_run",
+                event_attempt,
+                event_revision,
+            )
+            return False
+
+        if event_attempt != run_state["attempt"]:
+            self._record_worker_event_decision(
+                run_id,
+                event_type,
+                "rejected",
+                "stale_attempt",
+                event_attempt,
+                event_revision,
+            )
+            return False
+
+        if event_revision != run_state["revision"]:
+            self._record_worker_event_decision(
+                run_id,
+                event_type,
+                "rejected",
+                "stale_revision",
+                event_attempt,
+                event_revision,
+            )
+            return False
+
+        run_state["status"] = event.get("status", run_state["status"])
+        run_state["revision"] += 1
+        self._record_worker_event_decision(
+            run_id,
+            event_type,
+            "accepted",
+            "current_run",
+            event_attempt,
+            event_revision,
+        )
+        return True
+
+    def _record_worker_event_decision(
+        self,
+        run_id: str,
+        event_type: str,
+        decision: str,
+        reason: str,
+        attempt: Any,
+        revision: Any,
+    ) -> None:
+        audit_record = {
+            "run_id": run_id,
+            "event_type": event_type,
+            "decision": decision,
+            "reason": reason,
+            "attempt": attempt,
+            "revision": revision,
+        }
+        self.audit_log.append(audit_record)
+        logger.info(
+            "Worker event %s for run %s: %s (%s)",
+            event_type,
+            run_id,
+            decision,
+            reason,
+        )
 
     async def start(self) -> None:
         self._running = True
@@ -82,7 +197,10 @@ class OrchestrationEngine:
         )
 
     def _execute_in_thread(self, agent: Dict, task: Dict) -> Any:
-        return {"status": "completed", "output": f"Task {task['id']} processed by {agent['name']}"}
+        return {
+            "status": "completed",
+            "output": f"Task {task['id']} processed by {agent['name']}",
+        }
 
 # 2019-04-24T14:55:39 update
 
