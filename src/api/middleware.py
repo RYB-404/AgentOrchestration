@@ -2,7 +2,8 @@
 
 import time
 import logging
-from typing import Callable
+from datetime import datetime, timezone
+from typing import Callable, Dict, Optional, Set, Tuple
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
@@ -10,30 +11,121 @@ from starlette.responses import Response
 logger = logging.getLogger(__name__)
 
 
+READ_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+def _normalize_scopes(scopes) -> Set[str]:
+    if scopes is None:
+        return set()
+    if isinstance(scopes, str):
+        return {scopes}
+    return set(scopes)
+
+
+def _required_scope(request: Request) -> Optional[str]:
+    if not request.url.path.startswith("/api/v2/agents"):
+        return None
+    return "agents:read" if request.method in READ_METHODS else "agents:write"
+
+
+def _token_type(token: str) -> Optional[str]:
+    if token.startswith("mch_"):
+        return "machine"
+    if token.startswith("usr_"):
+        return "user"
+    return None
+
+
 class AuthMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        if request.url.path.startswith("/api/v2") and request.url.path != "/api/v2/auth/token":
-            token = request.headers.get("Authorization", "")
-            if not token.startswith("Bearer "):
-                return Response(status_code=401, content="Unauthorized")
+    def __init__(self, app, token_store: Optional[Dict[str, Dict]] = None):
+        super().__init__(app)
+        self.token_store = token_store or {}
+
+    def _validate_token(
+        self,
+        auth_header: str,
+    ) -> Tuple[Optional[Dict], Optional[Response]]:
+        if not auth_header.startswith("Bearer "):
+            return None, Response(status_code=401, content="Unauthorized")
+
+        token = auth_header.removeprefix("Bearer ").strip()
+        token_type = _token_type(token)
+        if not token_type:
+            return None, Response(status_code=401, content="Invalid token")
+
+        record = self.token_store.get(token)
+        if not record or record.get("type") != token_type:
+            return None, Response(status_code=401, content="Invalid token")
+
+        if record.get("revoked"):
+            return None, Response(status_code=401, content="Revoked token")
+
+        expires_at = record.get("expires_at")
+        if expires_at is not None:
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if expires_at <= datetime.now(timezone.utc):
+                return None, Response(status_code=401, content="Expired token")
+
+        return {
+            "type": token_type,
+            "principal": record.get("principal"),
+            "scopes": _normalize_scopes(record.get("scopes")),
+        }, None
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable,
+    ) -> Response:
+        if (
+            request.url.path.startswith("/api/v2")
+            and request.url.path != "/api/v2/auth/token"
+        ):
+            principal, error_response = self._validate_token(
+                request.headers.get("Authorization", "")
+            )
+            if error_response:
+                return error_response
+
+            required_scope = _required_scope(request)
+            if required_scope and required_scope not in principal["scopes"]:
+                return Response(
+                    status_code=403,
+                    content="Insufficient scope",
+                )
+
+            request.state.token_type = principal["type"]
+            request.state.principal = principal["principal"]
+            request.state.scopes = principal["scopes"]
+
         return await call_next(request)
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, max_requests: int = 100, window: int = 60):
+    def __init__(
+        self,
+        app,
+        max_requests: int = 100,
+        window: int = 60,
+    ):
         super().__init__(app)
         self.max_requests = max_requests
         self.window = window
         self._requests = {}
 
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+    async def dispatch(
+        self, request: Request, call_next: Callable
+    ) -> Response:
         client_ip = request.client.host if request.client else "unknown"
         now = time.time()
 
         if client_ip not in self._requests:
             self._requests[client_ip] = []
 
-        self._requests[client_ip] = [t for t in self._requests[client_ip] if now - t < self.window]
+        self._requests[client_ip] = [
+            t for t in self._requests[client_ip] if now - t < self.window
+        ]
 
         if len(self._requests[client_ip]) >= self.max_requests:
             return Response(status_code=429, content="Too many requests")
@@ -43,11 +135,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
 
 class LoggingMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+    async def dispatch(
+        self, request: Request, call_next: Callable
+    ) -> Response:
         start = time.time()
         response = await call_next(request)
         duration = time.time() - start
-        logger.info(f"{request.method} {request.url.path} {response.status_code} {duration:.3f}s")
+        logger.info(
+            f"{request.method} {request.url.path} "
+            f"{response.status_code} {duration:.3f}s"
+        )
         return response
 
 # 2019-03-01T18:35:19 update
