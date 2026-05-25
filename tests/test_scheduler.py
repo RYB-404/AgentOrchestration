@@ -1,5 +1,24 @@
 import pytest
-from src.orchestrator.scheduler import TaskScheduler
+import importlib.util
+from pathlib import Path
+
+
+_SCHEDULER_PATH = Path(__file__).resolve().parents[1] / "src" / "orchestrator" / "scheduler.py"
+_SPEC = importlib.util.spec_from_file_location("scheduler", _SCHEDULER_PATH)
+_SCHEDULER = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_SCHEDULER)
+TaskScheduler = _SCHEDULER.TaskScheduler
+
+
+class ManualClock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += seconds
 
 
 class TestTaskScheduler:
@@ -35,6 +54,40 @@ class TestTaskScheduler:
         import asyncio
         task = asyncio.run(self.scheduler.dequeue())
         assert self.scheduler.fail(task["id"])
+
+    def test_scheduled_lane_does_not_block_immediate_workload(self):
+        clock = ManualClock()
+        scheduler = TaskScheduler(clock=clock)
+        scheduled_id = scheduler.schedule({"type": "scheduled"}, delay=10)
+        immediate_id = scheduler.enqueue({"type": "immediate"}, priority=1)
+
+        import asyncio
+        task = asyncio.run(scheduler.dequeue())
+
+        assert task["id"] == immediate_id
+        assert task["type"] == "immediate"
+        assert task["lane"] == "immediate"
+        assert scheduler.lane_audit()[-1] == {
+            "event": "scheduled_deferred",
+            "task_id": scheduled_id,
+            "queue": "default",
+            "reason": "not_due",
+        }
+
+    def test_scheduled_work_promotes_only_after_due_time(self):
+        clock = ManualClock()
+        scheduler = TaskScheduler(clock=clock)
+        task_id = scheduler.schedule({"type": "scheduled"}, delay=5, priority=9)
+
+        import asyncio
+        assert asyncio.run(scheduler.dequeue()) is None
+
+        clock.advance(5)
+        task = asyncio.run(scheduler.dequeue())
+
+        assert task["id"] == task_id
+        assert task["type"] == "scheduled"
+        assert task["lane"] == "scheduled"
 
 # 2019-01-09T19:07:03 update
 

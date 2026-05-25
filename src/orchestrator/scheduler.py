@@ -3,7 +3,7 @@
 import asyncio
 import heapq
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 from uuid import uuid4
 
 
@@ -31,17 +31,20 @@ class PriorityQueue:
 
 
 class TaskScheduler:
-    def __init__(self):
+    def __init__(self, clock: Callable[[], float] = time.time):
         self._queues: Dict[str, PriorityQueue] = {}
-        self._scheduled: Dict[str, float] = {}
+        self._scheduled: Dict[str, Dict] = {}
         self._in_flight: Dict[str, Dict] = {}
         self._max_retries = 3
+        self._clock = clock
+        self._lane_audit = []
 
     def enqueue(self, task: Dict, queue: str = "default", priority: int = 0) -> str:
         task_id = str(uuid4())
         task["id"] = task_id
-        task["enqueued_at"] = time.time()
+        task["enqueued_at"] = self._clock()
         task["retries"] = 0
+        task["lane"] = "immediate"
 
         if queue not in self._queues:
             self._queues[queue] = PriorityQueue()
@@ -51,16 +54,34 @@ class TaskScheduler:
     def schedule(self, task: Dict, delay: float, queue: str = "default", priority: int = 0) -> str:
         task_id = str(uuid4())
         task["id"] = task_id
-        self._scheduled[task_id] = time.time() + delay
+        task["lane"] = "scheduled"
+        self._scheduled[task_id] = {
+            "task": task,
+            "due_at": self._clock() + delay,
+            "queue": queue,
+            "priority": priority,
+        }
         return task_id
 
     async def dequeue(self, queue: str = "default", timeout: float = 1.0) -> Optional[Dict]:
-        now = time.time()
-        expired = [tid for tid, t in self._scheduled.items() if t <= now]
+        now = self._clock()
+        for tid, scheduled in self._scheduled.items():
+            if scheduled["queue"] == queue and scheduled["due_at"] > now:
+                self._record_lane_event("scheduled_deferred", tid, queue, "not_due")
+
+        expired = [
+            tid
+            for tid, scheduled in self._scheduled.items()
+            if scheduled["queue"] == queue and scheduled["due_at"] <= now
+        ]
         for tid in expired:
-            task = self._scheduled.pop(tid)
-            if task:
-                self.enqueue(task, queue)
+            scheduled = self._scheduled.pop(tid)
+            if scheduled:
+                self._enqueue_scheduled(
+                    scheduled["task"],
+                    scheduled["queue"],
+                    scheduled["priority"],
+                )
 
         if queue in self._queues and len(self._queues[queue]) > 0:
             task = self._queues[queue].pop()
@@ -80,6 +101,27 @@ class TaskScheduler:
                 self.enqueue(task, queue, priority=task.get("priority", 0))
                 return True
         return False
+
+    def lane_audit(self):
+        return [dict(entry) for entry in self._lane_audit]
+
+    def _enqueue_scheduled(self, task: Dict, queue: str, priority: int) -> None:
+        task["enqueued_at"] = self._clock()
+        task.setdefault("retries", 0)
+        task["lane"] = "scheduled"
+        if queue not in self._queues:
+            self._queues[queue] = PriorityQueue()
+        self._queues[queue].push(task, priority)
+
+    def _record_lane_event(self, event: str, task_id: str, queue: str, reason: str) -> None:
+        entry = {
+            "event": event,
+            "task_id": task_id,
+            "queue": queue,
+            "reason": reason,
+        }
+        if not self._lane_audit or self._lane_audit[-1] != entry:
+            self._lane_audit.append(entry)
 
 # 2019-04-25T08:37:12 update
 
