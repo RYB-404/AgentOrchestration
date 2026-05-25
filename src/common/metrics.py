@@ -7,16 +7,21 @@ from threading import Lock
 
 
 class MetricsCollector:
-    def __init__(self):
+    def __init__(self, counter_max: int = 2**63 - 1):
         self._lock = Lock()
         self._counters: Dict[str, int] = defaultdict(int)
+        self._counter_attempts: Dict[str, int] = defaultdict(int)
+        self._counter_max = counter_max
         self._gauges: Dict[str, float] = {}
         self._histograms: Dict[str, List[float]] = defaultdict(list)
         self._timers: Dict[str, float] = {}
 
     def increment(self, metric: str, value: int = 1) -> None:
+        if value < 0:
+            raise ValueError("counter increment must be non-negative")
         with self._lock:
-            self._counters[metric] += value
+            self._counter_attempts[metric] += value
+            self._counters[metric] = min(self._counters[metric] + value, self._counter_max)
 
     def gauge(self, metric: str, value: float) -> None:
         with self._lock:
@@ -34,7 +39,7 @@ class MetricsCollector:
         with self._lock:
             if metric in self._timers:
                 duration = time.time() - self._timers.pop(metric)
-                self.observe(metric, duration)
+                self._histograms[metric].append(duration)
                 return duration
         return 0.0
 
@@ -42,10 +47,22 @@ class MetricsCollector:
         with self._lock:
             return {
                 "counters": dict(self._counters),
+                "counter_overflows": self._counter_overflows(),
                 "gauges": dict(self._gauges),
                 "histograms": {k: {"count": len(v), "sum": sum(v), "avg": sum(v) / len(v) if v else 0}
                                for k, v in self._histograms.items()},
             }
+
+    def _counter_overflows(self) -> Dict[str, Dict[str, int]]:
+        return {
+            metric: {
+                "attempted": attempted,
+                "exported": self._counters[metric],
+                "dropped": attempted - self._counters[metric],
+            }
+            for metric, attempted in self._counter_attempts.items()
+            if attempted > self._counters[metric]
+        }
 
 
 metrics = MetricsCollector()

@@ -31,6 +31,26 @@ class TestMetricsCollector:
         duration = self.metrics.stop_timer("operation")
         assert duration > 0.005
 
+    def test_counter_saturates_at_exporter_limit_with_audit(self):
+        metrics = MetricsCollector(counter_max=10)
+
+        metrics.increment("events.total", 7)
+        metrics.increment("events.total", 6)
+
+        snapshot = metrics.snapshot()
+        assert snapshot["counters"]["events.total"] == 10
+        assert snapshot["counter_overflows"] == {
+            "events.total": {
+                "attempted": 13,
+                "exported": 10,
+                "dropped": 3,
+            }
+        }
+
+    def test_counter_rejects_negative_increments(self):
+        with pytest.raises(ValueError, match="counter increment must be non-negative"):
+            self.metrics.increment("events.total", -1)
+
 # 2019-07-16T09:29:21 update
 
 # 2019-09-09T13:35:42 update
