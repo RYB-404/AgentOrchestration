@@ -32,6 +32,30 @@ class TestConfig:
         assert data["key1"] == "value1"
         assert data["key2"] == "value2"
 
+    def test_env_override_prefers_existing_literal_underscore_key(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.json"
+        config_file.write_text('{"api_url": "https://old.example", "api": {"timeout": 5}}')
+        monkeypatch.setenv("AO_API_URL", "https://new.example")
+
+        config = Config(str(config_file))
+
+        assert config.get("api_url") == "https://new.example"
+        assert config.get("api.url") is None
+
+    def test_env_override_still_supports_nested_keys(self, monkeypatch):
+        monkeypatch.setenv("AO_DATABASE_HOST", "db.internal")
+
+        config = Config()
+
+        assert config.get("database.host") == "db.internal"
+
+    def test_env_override_supports_escaped_literal_underscores(self, monkeypatch):
+        monkeypatch.setenv("AO_SERVICE__API_URL", "https://service.example")
+
+        config = Config()
+
+        assert config.get("service_api.url") == "https://service.example"
+
 # 2019-02-01T18:58:35 update
 
 # 2019-07-31T13:45:15 update
