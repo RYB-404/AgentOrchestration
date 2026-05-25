@@ -1,5 +1,24 @@
 import pytest
-from src.orchestrator.scheduler import TaskScheduler
+import importlib.util
+from pathlib import Path
+
+
+_SCHEDULER_PATH = Path(__file__).resolve().parents[1] / "src" / "orchestrator" / "scheduler.py"
+_SPEC = importlib.util.spec_from_file_location("scheduler", _SCHEDULER_PATH)
+_SCHEDULER = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_SCHEDULER)
+TaskScheduler = _SCHEDULER.TaskScheduler
+
+
+class ManualClock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += seconds
 
 
 class TestTaskScheduler:
@@ -35,6 +54,44 @@ class TestTaskScheduler:
         import asyncio
         task = asyncio.run(self.scheduler.dequeue())
         assert self.scheduler.fail(task["id"])
+
+    def test_retry_uses_jittered_delay_and_preserves_task_identity(self):
+        clock = ManualClock()
+        scheduler = TaskScheduler(clock=clock, jitter=lambda: 0.25)
+        task_id = scheduler.enqueue({"type": "test"}, priority=7)
+
+        import asyncio
+        first_attempt = asyncio.run(scheduler.dequeue())
+        assert first_attempt["id"] == task_id
+
+        assert scheduler.fail(task_id, attempt_token=first_attempt["attempt_token"])
+        assert asyncio.run(scheduler.dequeue()) is None
+
+        clock.advance(1.24)
+        assert asyncio.run(scheduler.dequeue()) is None
+
+        clock.advance(0.01)
+        retry = asyncio.run(scheduler.dequeue())
+        assert retry["id"] == task_id
+        assert retry["retries"] == 1
+        assert retry["attempt_token"] != first_attempt["attempt_token"]
+
+    def test_stale_attempt_cannot_complete_or_fail_retried_task(self):
+        clock = ManualClock()
+        scheduler = TaskScheduler(clock=clock, jitter=lambda: 0)
+        task_id = scheduler.enqueue({"type": "test"})
+
+        import asyncio
+        first_attempt = asyncio.run(scheduler.dequeue())
+        assert scheduler.fail(task_id, attempt_token=first_attempt["attempt_token"])
+
+        clock.advance(1)
+        retry_attempt = asyncio.run(scheduler.dequeue())
+        assert retry_attempt["id"] == task_id
+
+        assert not scheduler.complete(task_id, attempt_token=first_attempt["attempt_token"])
+        assert not scheduler.fail(task_id, attempt_token=first_attempt["attempt_token"])
+        assert scheduler.complete(task_id, attempt_token=retry_attempt["attempt_token"])
 
 # 2019-01-09T19:07:03 update
 
