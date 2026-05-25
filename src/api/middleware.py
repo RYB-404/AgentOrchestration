@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Callable, Dict, Optional, Set, Tuple
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+from starlette.responses import JSONResponse
 from starlette.responses import Response
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,15 @@ def _token_type(token: str) -> Optional[str]:
     return None
 
 
+def _auth_error(status_code: int, code: str, message: str, **fields) -> Response:
+    error = {
+        "code": code,
+        "message": message,
+    }
+    error.update({key: value for key, value in fields.items() if value is not None})
+    return JSONResponse(status_code=status_code, content={"error": error})
+
+
 class AuthMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, token_store: Optional[Dict[str, Dict]] = None):
         super().__init__(app)
@@ -46,26 +56,26 @@ class AuthMiddleware(BaseHTTPMiddleware):
         auth_header: str,
     ) -> Tuple[Optional[Dict], Optional[Response]]:
         if not auth_header.startswith("Bearer "):
-            return None, Response(status_code=401, content="Unauthorized")
+            return None, _auth_error(401, "unauthorized", "Bearer token is required")
 
         token = auth_header.removeprefix("Bearer ").strip()
         token_type = _token_type(token)
         if not token_type:
-            return None, Response(status_code=401, content="Invalid token")
+            return None, _auth_error(401, "invalid_token", "Token type is not recognized")
 
         record = self.token_store.get(token)
         if not record or record.get("type") != token_type:
-            return None, Response(status_code=401, content="Invalid token")
+            return None, _auth_error(401, "invalid_token", "Token is not registered")
 
         if record.get("revoked"):
-            return None, Response(status_code=401, content="Revoked token")
+            return None, _auth_error(401, "revoked_token", "Token has been revoked")
 
         expires_at = record.get("expires_at")
         if expires_at is not None:
             if expires_at.tzinfo is None:
                 expires_at = expires_at.replace(tzinfo=timezone.utc)
             if expires_at <= datetime.now(timezone.utc):
-                return None, Response(status_code=401, content="Expired token")
+                return None, _auth_error(401, "expired_token", "Token has expired")
 
         return {
             "type": token_type,
@@ -90,9 +100,19 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
             required_scope = _required_scope(request)
             if required_scope and required_scope not in principal["scopes"]:
-                return Response(
-                    status_code=403,
-                    content="Insufficient scope",
+                return _auth_error(
+                    403,
+                    "insufficient_scope",
+                    "Token does not grant the required scope",
+                    required_scope=required_scope,
+                )
+            if required_scope == "agents:write" and principal["type"] != "machine":
+                return _auth_error(
+                    403,
+                    "machine_token_required",
+                    "Agent write operations require a machine token",
+                    required_scope=required_scope,
+                    token_type=principal["type"],
                 )
 
             request.state.token_type = principal["type"]

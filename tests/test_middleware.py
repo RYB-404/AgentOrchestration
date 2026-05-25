@@ -47,7 +47,11 @@ def test_rejects_malformed_bearer_token_before_handler():
     response = _dispatch(middleware, request)
 
     assert response.status_code == 401
-    assert response.body == b"Invalid token"
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.body == (
+        b'{"error":{"code":"invalid_token",'
+        b'"message":"Token type is not recognized"}}'
+    )
 
 
 def test_user_token_can_read_agents_and_sets_principal_state():
@@ -93,7 +97,38 @@ def test_user_token_cannot_mutate_agents():
     response = _dispatch(middleware, request)
 
     assert response.status_code == 403
-    assert response.body == b"Insufficient scope"
+    assert response.body == (
+        b'{"error":{"code":"insufficient_scope",'
+        b'"message":"Token does not grant the required scope",'
+        b'"required_scope":"agents:write"}}'
+    )
+
+
+def test_user_token_with_write_scope_still_cannot_use_machine_write_path():
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+    middleware = AuthMiddleware(
+        app=None,
+        token_store={
+            "usr_alice.adminsig": {
+                "type": "user",
+                "principal": "alice",
+                "scopes": {"agents:read", "agents:write"},
+                "expires_at": expires_at,
+            }
+        },
+    )
+    request = Request(
+        _scope(method="POST", authorization="Bearer usr_alice.adminsig")
+    )
+
+    response = _dispatch(middleware, request)
+
+    assert response.status_code == 403
+    assert response.body == (
+        b'{"error":{"code":"machine_token_required",'
+        b'"message":"Agent write operations require a machine token",'
+        b'"required_scope":"agents:write","token_type":"user"}}'
+    )
 
 
 def test_machine_token_can_mutate_agents():
@@ -134,7 +169,7 @@ def test_machine_token_can_mutate_agents():
                 "scopes": {"agents:read"},
                 "revoked": True,
             },
-            b"Revoked token",
+            b'{"error":{"code":"revoked_token","message":"Token has been revoked"}}',
         ),
         (
             {
@@ -145,7 +180,7 @@ def test_machine_token_can_mutate_agents():
                     datetime.now(timezone.utc) - timedelta(seconds=1)
                 ),
             },
-            b"Expired token",
+            b'{"error":{"code":"expired_token","message":"Token has expired"}}',
         ),
     ],
 )
