@@ -2,16 +2,25 @@
 
 import json
 import os
+import time
 from typing import Any, Dict, List, Optional
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 
 
 class OrchestratorClient:
-    def __init__(self, base_url: str = None, api_key: str = None):
+    def __init__(
+        self,
+        base_url: str = None,
+        api_key: str = None,
+        get_retry_count: int = 0,
+        get_retry_backoff: float = 0.0,
+    ):
         self.base_url = base_url or os.getenv("AO_API_URL", "https://api.agent-orchestrator.io")
         self.api_key = api_key or os.getenv("AO_API_KEY", "")
         self._session = None
+        self.get_retry_count = max(0, int(get_retry_count))
+        self.get_retry_backoff = max(0.0, float(get_retry_backoff))
 
     def _request(self, method: str, path: str, data: Dict = None) -> Dict:
         url = f"{self.base_url}/api/v2{path}"
@@ -22,11 +31,25 @@ class OrchestratorClient:
         body = json.dumps(data).encode() if data else None
         req = Request(url, data=body, headers=headers, method=method)
 
-        try:
-            with urlopen(req) as resp:
-                return json.loads(resp.read().decode())
-        except HTTPError as e:
-            return {"error": e.code, "message": e.reason}
+        attempts = self.get_retry_count + 1 if method.upper() == "GET" else 1
+        for attempt in range(attempts):
+            try:
+                with urlopen(req) as resp:
+                    return json.loads(resp.read().decode())
+            except HTTPError as e:
+                if not self._should_retry(method, e, attempt, attempts):
+                    return {"error": e.code, "message": e.reason}
+                if self.get_retry_backoff:
+                    time.sleep(self.get_retry_backoff * (attempt + 1))
+
+        return {"error": 503, "message": "Retries exhausted"}
+
+    def _should_retry(self, method: str, error: HTTPError, attempt: int, attempts: int) -> bool:
+        return (
+            method.upper() == "GET"
+            and error.code in {502, 503}
+            and attempt + 1 < attempts
+        )
 
     def register_agent(self, name: str, agent_type: str, config: Dict = None) -> Dict:
         return self._request("POST", "/agents", {
