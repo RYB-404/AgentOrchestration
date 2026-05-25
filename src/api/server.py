@@ -3,7 +3,8 @@
 import os
 from typing import Dict
 
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
@@ -35,6 +36,23 @@ def create_app(config: Dict = None) -> FastAPI:
     app.add_middleware(LoggingMiddleware)
 
     app.include_router(router, prefix="/api/v2")
+
+    @app.exception_handler(HTTPException)
+    async def consistent_http_exception_handler(
+        request: Request,
+        exc: HTTPException,
+    ):
+        if isinstance(exc.detail, dict) and "error" in exc.detail:
+            return JSONResponse(status_code=exc.status_code, content=exc.detail)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": {
+                    "code": "http_error",
+                    "message": str(exc.detail),
+                }
+            },
+        )
 
     @app.get("/health")
     async def health():

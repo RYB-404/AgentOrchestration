@@ -34,8 +34,8 @@ def test_list_agents_rejects_malformed_status_before_lookup():
     response = client.get("/api/v2/agents?status=ready", headers=auth_headers())
 
     assert response.status_code == 400
-    assert response.json()["detail"]["error"]["code"] == "invalid_request"
-    assert response.json()["detail"]["error"]["field"] == "status"
+    assert response.json()["error"]["code"] == "invalid_request"
+    assert response.json()["error"]["field"] == "status"
 
 
 def test_get_agent_rejects_malformed_id_before_registry_lookup(monkeypatch):
@@ -50,12 +50,10 @@ def test_get_agent_rejects_malformed_id_before_registry_lookup(monkeypatch):
 
     assert response.status_code == 400
     assert response.json() == {
-        "detail": {
-            "error": {
-                "code": "invalid_request",
-                "message": "agent_id must be a valid UUID",
-                "field": "agent_id",
-            }
+        "error": {
+            "code": "invalid_request",
+            "message": "agent_id must be a valid UUID",
+            "field": "agent_id",
         }
     }
 
@@ -75,10 +73,27 @@ def test_register_agent_validates_inputs_before_mutation(monkeypatch):
     )
 
     assert response.status_code == 400
-    assert response.json()["detail"]["error"] == {
+    assert response.json()["error"] == {
         "code": "invalid_request",
         "message": "name must be a non-empty string",
         "field": "name",
+    }
+
+
+def test_missing_agent_uses_same_error_envelope():
+    client = make_client()
+
+    response = client.get(
+        "/api/v2/agents/00000000-0000-0000-0000-000000000000",
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "error": {
+            "code": "not_found",
+            "message": "Agent not found",
+        }
     }
 
 
