@@ -6,6 +6,8 @@ from typing import Any, Dict, Optional
 
 
 class Config:
+    SANDBOX_RESOURCE_LIMIT_KEYS = {"cpu_time", "memory_mb", "disk_mb"}
+
     def __init__(self, config_path: Optional[str] = None):
         self._data: Dict[str, Any] = {}
         if config_path:
@@ -49,6 +51,33 @@ class Config:
 
     def to_dict(self) -> Dict:
         return self._data
+
+    def get_sandbox_resource_limits(self) -> Dict[str, int]:
+        limits = self.get("sandbox", {})
+        if not isinstance(limits, dict):
+            raise ValueError("sandbox must be an object")
+
+        unknown_keys = sorted(set(limits) - self.SANDBOX_RESOURCE_LIMIT_KEYS)
+        if unknown_keys:
+            raise ValueError(f"unknown sandbox resource limit: {unknown_keys[0]}")
+
+        validated = {}
+        for key in self.SANDBOX_RESOURCE_LIMIT_KEYS:
+            if key in limits:
+                validated[key] = self._positive_int(key, limits[key])
+        return validated
+
+    @staticmethod
+    def _positive_int(name: str, value: Any) -> int:
+        if isinstance(value, bool):
+            raise ValueError(f"{name} must be a positive integer")
+        if isinstance(value, str):
+            if not value.isdigit():
+                raise ValueError(f"{name} must be a positive integer")
+            value = int(value)
+        if not isinstance(value, int) or value <= 0:
+            raise ValueError(f"{name} must be a positive integer")
+        return value
 
 # 2019-03-14T15:29:32 update
 

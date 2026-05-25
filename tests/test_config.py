@@ -32,6 +32,39 @@ class TestConfig:
         assert data["key1"] == "value1"
         assert data["key2"] == "value2"
 
+    def test_get_sandbox_resource_limits_coerces_numeric_strings(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(
+            '{"sandbox": {"cpu_time": "30", "memory_mb": "512", "disk_mb": "100"}}'
+        )
+        config = Config(str(config_file))
+
+        assert config.get_sandbox_resource_limits() == {
+            "cpu_time": 30,
+            "memory_mb": 512,
+            "disk_mb": 100,
+        }
+
+    def test_get_sandbox_resource_limits_rejects_unknown_keys(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(
+            '{"sandbox": {"cpu_time": 30, "memory_mb": 512, "disk_mb": 100, "gpu": 1}}'
+        )
+        config = Config(str(config_file))
+
+        with pytest.raises(ValueError, match="unknown sandbox resource limit: gpu"):
+            config.get_sandbox_resource_limits()
+
+    def test_get_sandbox_resource_limits_reports_exact_invalid_field(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(
+            '{"sandbox": {"cpu_time": 30, "memory_mb": "large", "disk_mb": 100}}'
+        )
+        config = Config(str(config_file))
+
+        with pytest.raises(ValueError, match="memory_mb must be a positive integer"):
+            config.get_sandbox_resource_limits()
+
 # 2019-02-01T18:58:35 update
 
 # 2019-07-31T13:45:15 update
