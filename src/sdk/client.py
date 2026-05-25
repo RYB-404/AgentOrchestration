@@ -2,6 +2,7 @@
 
 import json
 import os
+from collections.abc import Mapping
 from typing import Any, Dict, List, Optional
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
@@ -29,10 +30,17 @@ class OrchestratorClient:
             return {"error": e.code, "message": e.reason}
 
     def register_agent(self, name: str, agent_type: str, config: Dict = None) -> Dict:
+        if config is None:
+            config = {}
+        elif not isinstance(config, Mapping):
+            raise TypeError("config must be a mapping")
+        else:
+            config = dict(config)
+
         return self._request("POST", "/agents", {
             "name": name,
             "agent_type": agent_type,
-            "config": config or {},
+            "config": config,
         })
 
     def list_agents(self, status: str = None) -> Dict:
