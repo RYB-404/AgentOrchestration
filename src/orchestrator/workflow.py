@@ -1,7 +1,8 @@
 """Workflow Manager — Defines and executes multi-step agent workflows."""
 
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Set
 from uuid import uuid4
 
 
@@ -81,6 +82,77 @@ class WorkflowManager:
 
         workflow.status = StepStatus.COMPLETED
         return True
+
+
+@dataclass(frozen=True)
+class ArtifactCleanupDecision:
+    allowed: bool
+    reason: str
+
+
+class WorkflowArtifactCleanupPlanner:
+    """Defers artifact cleanup while retrying steps still depend on the data."""
+
+    def __init__(self):
+        self._artifacts: Dict[str, str] = {}
+        self._retry_dependencies: Dict[str, Set[str]] = {}
+        self._audit: List[Dict[str, str]] = []
+
+    def register_artifact(self, artifact_id: str, produced_by: str) -> None:
+        self._artifacts[artifact_id] = produced_by
+
+    def mark_retry_pending(self, step_id: str, depends_on_artifacts: Set[str]) -> None:
+        self._retry_dependencies[step_id] = set(depends_on_artifacts)
+
+    def mark_retry_resolved(self, step_id: str) -> None:
+        self._retry_dependencies.pop(step_id, None)
+
+    def request_cleanup(self, artifact_id: str, reason: str) -> ArtifactCleanupDecision:
+        if artifact_id not in self._artifacts:
+            self._record("cleanup_rejected", artifact_id, "unknown_artifact")
+            return ArtifactCleanupDecision(False, "unknown_artifact")
+
+        dependent_step = self._dependent_retry_step(artifact_id)
+        if dependent_step:
+            self._record(
+                "cleanup_deferred",
+                artifact_id,
+                "retry_dependency_pending",
+                dependent_step=dependent_step,
+            )
+            return ArtifactCleanupDecision(False, "retry_dependency_pending")
+
+        self._artifacts.pop(artifact_id, None)
+        self._record("cleanup_allowed", artifact_id, "cleanup_allowed")
+        return ArtifactCleanupDecision(True, "cleanup_allowed")
+
+    def pending_artifacts(self) -> Set[str]:
+        return set(self._artifacts)
+
+    def audit_log(self) -> List[Dict[str, str]]:
+        return [dict(entry) for entry in self._audit]
+
+    def _dependent_retry_step(self, artifact_id: str) -> Optional[str]:
+        for step_id, artifacts in self._retry_dependencies.items():
+            if artifact_id in artifacts:
+                return step_id
+        return None
+
+    def _record(
+        self,
+        event: str,
+        artifact_id: str,
+        reason: str,
+        dependent_step: Optional[str] = None,
+    ) -> None:
+        entry = {
+            "event": event,
+            "artifact_id": artifact_id,
+            "reason": reason,
+        }
+        if dependent_step:
+            entry["dependent_step"] = dependent_step
+        self._audit.append(entry)
 
 # 2019-03-27T19:58:07 update
 
