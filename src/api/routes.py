@@ -1,12 +1,19 @@
 """API route definitions."""
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, Header, HTTPException
 from typing import List, Dict, Optional
 
-from src.agent import AgentRegistry, AgentStatus
+from src.agent.registry import AgentRegistry, AgentStatus
+from src.orchestrator.runs import (
+    InMemoryRunStore,
+    OrchestrationRunService,
+    RunAccessError,
+    RunPrincipal,
+)
 
 router = APIRouter()
 registry = AgentRegistry()
+run_service = OrchestrationRunService(InMemoryRunStore())
 
 
 @router.get("/agents")
@@ -53,6 +60,19 @@ async def stop_agent(agent_id: str):
 @router.get("/agents/count")
 async def agent_count():
     return {"count": registry.count()}
+
+
+@router.get("/runs/{run_id}/status")
+async def get_run_status(
+    run_id: str,
+    workspace_id: Optional[str] = Header(default=None, alias="X-Workspace-ID"),
+    active_role: Optional[str] = Header(default=None, alias="X-Active-Role"),
+):
+    principal = RunPrincipal(workspace_id=workspace_id or "", role=active_role or "")
+    try:
+        return run_service.get_status(run_id, principal)
+    except RunAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
 
 # 2019-03-18T11:10:18 update
 
