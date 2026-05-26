@@ -1,6 +1,7 @@
 """Agent Executor — Handles task execution within agent sandboxes."""
 
 import asyncio
+import json
 import time
 from typing import Any, Callable, Dict, Optional
 from uuid import uuid4
@@ -22,9 +23,15 @@ class AgentExecutor:
             self._active_tasks[execution_id] = task_obj
             try:
                 result = await task_obj
-                self._results[execution_id] = result
+                self._results[execution_id] = self._ensure_json_serializable(result)
             except Exception as e:
-                self._results[execution_id] = {"error": str(e)}
+                self._results[execution_id] = {
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "execution_id": execution_id,
+                    "agent_id": agent_id,
+                    "task_id": task.get("id"),
+                }
             finally:
                 self._active_tasks.pop(execution_id, None)
         return execution_id
@@ -41,6 +48,13 @@ class AgentExecutor:
             "duration": duration,
             "timestamp": time.time(),
         }
+
+    def _ensure_json_serializable(self, result: Any) -> Any:
+        try:
+            json.dumps(result)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Execution result is not JSON serializable: {exc}") from exc
+        return result
 
     def get_result(self, execution_id: str) -> Optional[Any]:
         return self._results.get(execution_id)
