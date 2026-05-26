@@ -24,7 +24,14 @@ class OrchestratorClient:
 
         try:
             with urlopen(req) as resp:
-                return json.loads(resp.read().decode())
+                if getattr(resp, "status", None) == 204:
+                    return {}
+
+                raw_body = resp.read()
+                if not raw_body:
+                    return {}
+
+                return json.loads(raw_body.decode())
         except HTTPError as e:
             return {"error": e.code, "message": e.reason}
 
