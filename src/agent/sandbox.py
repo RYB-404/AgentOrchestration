@@ -2,9 +2,14 @@
 
 import os
 import tempfile
-import resource
+from contextlib import contextmanager
 from typing import Dict, Optional
 from pathlib import Path
+
+try:
+    import resource
+except ImportError:
+    resource = None
 
 
 class ResourceLimits:
@@ -15,9 +20,12 @@ class ResourceLimits:
 
 
 class AgentSandbox:
-    def __init__(self, base_path: Optional[str] = None):
+    DEFAULT_ENV_ALLOWLIST = {"PATH", "SYSTEMROOT", "TEMP", "TMP"}
+
+    def __init__(self, base_path: Optional[str] = None, env_allowlist: Optional[set[str]] = None):
         self.base_path = Path(base_path or tempfile.mkdtemp(prefix="ao_sandbox_"))
         self._sandboxes: Dict[str, Path] = {}
+        self.env_allowlist = set(env_allowlist or self.DEFAULT_ENV_ALLOWLIST)
 
     def create(self, agent_id: str, limits: Optional[ResourceLimits] = None) -> Path:
         sandbox_path = self.base_path / agent_id
@@ -37,12 +45,41 @@ class AgentSandbox:
         return self._sandboxes.get(agent_id)
 
     def apply_limits(self, agent_id: str, limits: ResourceLimits) -> None:
+        if resource is None:
+            return
+
         try:
             resource.setrlimit(resource.RLIMIT_CPU, (limits.cpu_time, limits.cpu_time))
             mem_bytes = limits.memory_mb * 1024 * 1024
             resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
         except (ValueError, resource.error) as e:
             pass
+
+    def build_environment(self, overrides: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+        allowed_keys = {key.upper(): key for key in self.env_allowlist}
+        sandbox_env = {
+            allowed_keys[key.upper()]: value
+            for key, value in os.environ.items()
+            if key.upper() in allowed_keys
+        }
+        if overrides:
+            sandbox_env.update(overrides)
+        return sandbox_env
+
+    @contextmanager
+    def isolated_environment(self, overrides: Optional[Dict[str, str]] = None):
+        original_env = dict(os.environ)
+        sandbox_env = self.build_environment(overrides)
+        for key in list(os.environ.keys()):
+            if key.upper() not in {env_key.upper() for env_key in sandbox_env}:
+                del os.environ[key]
+        for key, value in sandbox_env.items():
+            os.environ[key] = value
+        try:
+            yield os.environ
+        finally:
+            os.environ.clear()
+            os.environ.update(original_env)
 
     def cleanup_all(self) -> None:
         for agent_id in list(self._sandboxes.keys()):
