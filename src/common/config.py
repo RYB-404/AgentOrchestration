@@ -23,8 +23,17 @@ class Config:
                 config_key = key[len(prefix):].lower().replace("_", ".")
                 self._set_nested(config_key, value)
 
-    def _set_nested(self, key: str, value: Any) -> None:
+    def _split_key(self, key: str) -> list[str]:
+        if not isinstance(key, str) or not key:
+            raise ValueError("config key must be a non-empty string")
+
         parts = key.split(".")
+        if any(part == "" for part in parts):
+            raise ValueError(f"config key contains an empty segment: {key!r}")
+        return parts
+
+    def _set_nested(self, key: str, value: Any) -> None:
+        parts = self._split_key(key)
         current = self._data
         for part in parts[:-1]:
             if part not in current:
@@ -33,7 +42,7 @@ class Config:
         current[parts[-1]] = value
 
     def get(self, key: str, default: Any = None) -> Any:
-        parts = key.split(".")
+        parts = self._split_key(key)
         current = self._data
         for part in parts:
             if isinstance(current, dict):

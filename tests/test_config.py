@@ -24,6 +24,22 @@ class TestConfig:
         config.set("a.b.c.d", "value")
         assert config.get("a.b.c.d") == "value"
 
+    @pytest.mark.parametrize("key", ["", ".database.host", "database..host", "database.host."])
+    def test_reject_empty_dotted_config_keys_on_set(self, key):
+        config = Config()
+
+        with pytest.raises(ValueError, match="config key"):
+            config.set(key, "value")
+
+        assert config.to_dict() == {}
+
+    @pytest.mark.parametrize("key", ["", ".database.host", "database..host", "database.host."])
+    def test_reject_empty_dotted_config_keys_on_get(self, key):
+        config = Config()
+
+        with pytest.raises(ValueError, match="config key"):
+            config.get(key)
+
     def test_to_dict(self):
         config = Config()
         config.set("key1", "value1")
