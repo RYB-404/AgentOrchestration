@@ -34,6 +34,7 @@ class TaskScheduler:
     def __init__(self):
         self._queues: Dict[str, PriorityQueue] = {}
         self._scheduled: Dict[str, float] = {}
+        self._scheduled_tasks: Dict[str, Dict] = {}
         self._in_flight: Dict[str, Dict] = {}
         self._max_retries = 3
 
@@ -51,14 +52,50 @@ class TaskScheduler:
     def schedule(self, task: Dict, delay: float, queue: str = "default", priority: int = 0) -> str:
         task_id = str(uuid4())
         task["id"] = task_id
-        self._scheduled[task_id] = time.time() + delay
+        task["queue"] = queue
+        task["priority"] = priority
+        task["scheduled_for"] = time.time() + delay
+        self._scheduled[task_id] = task["scheduled_for"]
+        self._scheduled_tasks[task_id] = task
         return task_id
+
+    def schedule_periodic_reconciliation(
+        self,
+        tasks: list[Dict],
+        interval: float,
+        queue: str = "default",
+        priority: int = 0,
+        initial_delay: float = 0.0,
+    ) -> list[str]:
+        if interval <= 0:
+            raise ValueError("interval must be greater than zero")
+
+        task_count = len(tasks)
+        if task_count == 0:
+            return []
+
+        stagger_step = interval / task_count
+        task_ids = []
+        for index, task in enumerate(tasks):
+            scheduled_task = dict(task)
+            scheduled_task["reconciliation_index"] = index
+            scheduled_task["reconciliation_interval"] = interval
+            task_ids.append(
+                self.schedule(
+                    scheduled_task,
+                    delay=initial_delay + (index * stagger_step),
+                    queue=queue,
+                    priority=priority,
+                )
+            )
+        return task_ids
 
     async def dequeue(self, queue: str = "default", timeout: float = 1.0) -> Optional[Dict]:
         now = time.time()
         expired = [tid for tid, t in self._scheduled.items() if t <= now]
         for tid in expired:
-            task = self._scheduled.pop(tid)
+            self._scheduled.pop(tid)
+            task = self._scheduled_tasks.pop(tid, None)
             if task:
                 self.enqueue(task, queue)
 
